@@ -3,26 +3,56 @@ use slint::SharedString;
 slint::include_modules!();
 
 struct Config {
-    max_rod: i32,
-    leftover: i32,
+    max_rod: f64,
+    leftover: f64,
     parts: i32,
-    part_len: i32,
+    part_len: f64,
     remainings: i32,
 }
 
 fn parse_input(ui: &AppWindow) -> Result<Config, SharedString> {
     ui.set_status_text("".into());
-    let parse = |s: &str, name: &str| {
+    let parse_i32 = |s: &str, name: &str| {
         s.trim()
             .parse::<i32>()
             .map_err(|e| SharedString::from(format!("Ошибка '{}' в поле '{}'", e, name)))
     };
+    let parse_f64 = |s: &str, name: &str| {
+        s.trim()
+            .replace(',', ".")
+            .parse::<f64>()
+            .map_err(|e| SharedString::from(format!("Ошибка '{}' в поле '{}'", e, name)))
+    };
+
+    let max_rod = parse_f64(&ui.get_max_rod_length(), "Максимальная длина прута")?;
+    let leftover = parse_f64(&ui.get_tail(), "Остаток")?;
+    let parts = parse_i32(&ui.get_parts_count(), "Количество заготовок")?;
+    let part_len = parse_f64(&ui.get_part_length(), "Длина заготовки")?;
+
+    if max_rod <= 0.0 {
+        return Err(SharedString::from(
+            "Максимальная длина прута должна быть больше нуля",
+        ));
+    }
+    if leftover < 0.0 {
+        return Err(SharedString::from("Остаток не может быть отрицательным"));
+    }
+    if part_len <= 0.0 {
+        return Err(SharedString::from(
+            "Длина заготовки должна быть больше нуля",
+        ));
+    }
+    if (max_rod - leftover) / part_len < 1.0 {
+        return Err(SharedString::from(
+            "Заготовка с учётом остатка не помещается в прут",
+        ));
+    }
 
     Ok(Config {
-        max_rod: parse(&ui.get_max_rod_length(), "Максимальная длина прута")?,
-        leftover: parse(&ui.get_tail(), "Остаток")?,
-        parts: parse(&ui.get_parts_count(), "Количество заготовок")?,
-        part_len: parse(&ui.get_part_length(), "Длина заготовки")?,
+        max_rod,
+        leftover,
+        parts,
+        part_len,
         remainings: ui.get_remainings_count(),
     })
 }
@@ -47,21 +77,38 @@ fn part_suffix(count: i32) -> &'static str {
     }
 }
 
-fn formula(p: i32, o: i32, m: i32) -> SharedString {
+fn fmt_len(v: f64) -> String {
+    if (v - v.round()).abs() < 1e-9 {
+        format!("{}", v.round() as i64)
+    } else {
+        format!("{:.3}", v)
+            .trim_end_matches('0')
+            .trim_end_matches('.')
+            .to_string()
+    }
+}
+
+fn max_per_rod(cfg: &Config) -> i32 {
+    ((cfg.max_rod - cfg.leftover) / cfg.part_len).floor() as i32
+}
+
+fn formula(p: f64, o: f64, m: f64) -> SharedString {
+    let avail = m - o;
+    let n_max = (avail / p).floor() as i64;
     SharedString::from(format!(
         "\nПуть расчета:\n{} × n + {} ≤ {}\n{} × n ≤ {}\nN ≤ {:.3}\nМаксимум деталей на прут: n = {}\n",
-        p,
-        o,
-        m,
-        p,
-        m - o,
-        (m - o) as f64 / p as f64,
-        (m - o) / p
+        fmt_len(p),
+        fmt_len(o),
+        fmt_len(m),
+        fmt_len(p),
+        fmt_len(m - o),
+        avail / p,
+        n_max
     ))
 }
 
 fn calc_simple(cfg: &Config) -> SharedString {
-    let max_per = (cfg.max_rod - cfg.leftover) / cfg.part_len;
+    let max_per = max_per_rod(cfg);
     let full = cfg.parts / max_per;
     let rem = cfg.parts % max_per;
     let mut out = String::new();
@@ -70,7 +117,7 @@ fn calc_simple(cfg: &Config) -> SharedString {
             "- {} прут{} по {} мм ({} детал{} с прута)\n",
             full,
             rod_suffix(full),
-            max_per * cfg.part_len + cfg.leftover,
+            fmt_len(max_per as f64 * cfg.part_len + cfg.leftover),
             max_per,
             part_suffix(max_per)
         );
@@ -78,26 +125,28 @@ fn calc_simple(cfg: &Config) -> SharedString {
     if rem > 0 {
         out += &format!(
             "- 1 прут: {} мм ({} детал{} с прута)\n",
-            rem * cfg.part_len + cfg.leftover,
+            fmt_len(rem as f64 * cfg.part_len + cfg.leftover),
             rem,
             part_suffix(rem)
         );
     }
     let rods_count = full + if rem > 0 { 1 } else { 0 };
-    let total_mat = (full * max_per + rem) * cfg.part_len + rods_count * cfg.leftover;
-    let total_left = rods_count * cfg.leftover;
+    let total_mat =
+        (full * max_per + rem) as f64 * cfg.part_len + rods_count as f64 * cfg.leftover;
+    let total_left = rods_count as f64 * cfg.leftover;
     out += &format!(
         "Общий расход материала: {} мм\nОбщий остаток: {} мм",
-        total_mat, total_left
+        fmt_len(total_mat),
+        fmt_len(total_left)
     );
     SharedString::from(out) + &formula(cfg.part_len, cfg.leftover, cfg.max_rod)
 }
 
 fn calc_all_equal(cfg: &Config) -> SharedString {
-    let max_per = (cfg.max_rod - cfg.leftover) / cfg.part_len;
+    let max_per = max_per_rod(cfg);
     let mut best = (0, i32::MAX);
     for n in 1..=max_per {
-        if n * cfg.part_len + cfg.leftover <= cfg.max_rod {
+        if n as f64 * cfg.part_len + cfg.leftover <= cfg.max_rod {
             let rods = (cfg.parts + n - 1) / n;
             if rods * n == cfg.parts && rods < best.1 {
                 best = (n, rods);
@@ -108,23 +157,23 @@ fn calc_all_equal(cfg: &Config) -> SharedString {
         return SharedString::from("Невозможно равномерно распределить детали по прутам.");
     }
     let (n, rods) = best;
-    let len = n * cfg.part_len + cfg.leftover;
-    let mat = rods * len;
-    let left = rods * cfg.leftover;
+    let len = n as f64 * cfg.part_len + cfg.leftover;
+    let mat = rods as f64 * len;
+    let left = rods as f64 * cfg.leftover;
     SharedString::from(format!(
         "- {} прут{} по {} мм ({} детал{} с прута)\nОбщий расход материала: {} мм\nОбщий остаток: {} мм",
         rods,
         rod_suffix(rods),
-        len,
+        fmt_len(len),
         n,
         part_suffix(n),
-        mat,
-        left
+        fmt_len(mat),
+        fmt_len(left)
     )) + &formula(cfg.part_len, cfg.leftover, cfg.max_rod)
 }
 
 fn calc_complicated(cfg: &Config) -> SharedString {
-    let max_per = (cfg.max_rod - cfg.leftover) / cfg.part_len;
+    let max_per = max_per_rod(cfg);
 
     if cfg.remainings <= 0 || cfg.parts <= max_per {
         return calc_simple(cfg);
@@ -134,20 +183,20 @@ fn calc_complicated(cfg: &Config) -> SharedString {
 
     if total_rods_needed <= cfg.remainings {
         let parts_per_rod = (cfg.parts + cfg.remainings - 1) / cfg.remainings;
-        let rod_length = parts_per_rod * cfg.part_len + cfg.leftover;
+        let rod_length = parts_per_rod as f64 * cfg.part_len + cfg.leftover;
 
-        let total_mat = cfg.remainings * rod_length;
-        let total_left = cfg.remainings * cfg.leftover;
+        let total_mat = cfg.remainings as f64 * rod_length;
+        let total_left = cfg.remainings as f64 * cfg.leftover;
 
         let out = format!(
             "- {} прут{} по {} мм ({} детал{} с прута)\nОбщий расход материала: {} мм\nОбщий остаток: {} мм",
             cfg.remainings,
             rod_suffix(cfg.remainings),
-            rod_length,
+            fmt_len(rod_length),
             parts_per_rod,
             part_suffix(parts_per_rod),
-            total_mat,
-            total_left
+            fmt_len(total_mat),
+            fmt_len(total_left)
         );
 
         return SharedString::from(out) + &formula(cfg.part_len, cfg.leftover, cfg.max_rod);
@@ -172,29 +221,30 @@ fn calc_complicated(cfg: &Config) -> SharedString {
             "- {} прут{} по {} мм ({} детал{} с прута)\n",
             full_rods,
             rod_suffix(full_rods),
-            max_per * cfg.part_len + cfg.leftover,
+            fmt_len(max_per as f64 * cfg.part_len + cfg.leftover),
             max_per,
             part_suffix(max_per)
         );
     }
 
-    let remaining_rod_length = parts_per_remaining_rod * cfg.part_len + cfg.leftover;
+    let remaining_rod_length = parts_per_remaining_rod as f64 * cfg.part_len + cfg.leftover;
     out += &format!(
         "- {} прут{} по {} мм ({} детал{} с прута)\n",
         cfg.remainings,
         rod_suffix(cfg.remainings),
-        remaining_rod_length,
+        fmt_len(remaining_rod_length),
         parts_per_remaining_rod,
         part_suffix(parts_per_remaining_rod)
     );
 
-    let total_mat =
-        full_rods * (max_per * cfg.part_len + cfg.leftover) + cfg.remainings * remaining_rod_length;
-    let total_left = (full_rods + cfg.remainings) * cfg.leftover;
+    let total_mat = full_rods as f64 * (max_per as f64 * cfg.part_len + cfg.leftover)
+        + cfg.remainings as f64 * remaining_rod_length;
+    let total_left = (full_rods + cfg.remainings) as f64 * cfg.leftover;
 
     out += &format!(
         "Общий расход материала: {} мм\nОбщий остаток: {} мм",
-        total_mat, total_left
+        fmt_len(total_mat),
+        fmt_len(total_left)
     );
 
     SharedString::from(out) + &formula(cfg.part_len, cfg.leftover, cfg.max_rod)
