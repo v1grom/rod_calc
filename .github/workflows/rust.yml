@@ -2,9 +2,12 @@ name: Build and Release (Windows)
 
 on:
   push:
-    branches: [ "master" ]
+    branches: ["master"]
   pull_request:
-    branches: [ "master" ]
+    branches: ["master"]
+
+permissions:
+  contents: write
 
 env:
   CARGO_TERM_COLOR: always
@@ -15,44 +18,53 @@ jobs:
     runs-on: windows-latest
 
     steps:
-    - name: Checkout
-      uses: actions/checkout@v3
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-tags: true
 
-    - name: Get version from EXE
-      id: version
-      run: |
-        cargo build --release
-        $file_version = (Get-Item ./target/release/rod_calc.exe).VersionInfo.FileVersion
-        "version=$file_version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
 
-    - name: Create Git Tag if missing
-      run: |
-        $tag = "v${{ steps.version.outputs.version }}"
-        git fetch --tags
-        if (-not (git tag -l $tag)) {
-          git config user.name "github-actions"
-          git config user.email "github-actions@github.com"
-          git config --global credential.helper manager
-          git remote set-url origin https://github.com/${{ github.repository }}.git
-          git push https://github.com/${{ github.repository }} --tags
-        }
-      env:
-        GITHUB_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
 
-    - name: Create or update GitHub Release
-      uses: softprops/action-gh-release@v1
-      with:
-        tag_name: v${{ steps.version.outputs.version }}
-        name: v${{ steps.version.outputs.version }}
-        body: "Автоматический релиз"
-        draft: false
-        prerelease: false
-        token: ${{ secrets.RELEASE_TOKEN }}
+      - name: Get version from Cargo.toml
+        id: version
+        shell: pwsh
+        run: |
+          $line = Get-Content Cargo.toml | Select-String '^\s*version\s*=\s*"(.*)"' | Select-Object -First 1
+          $cargo_version = $line.Matches.Groups[1].Value
+          if (-not $cargo_version) { throw "version not found in Cargo.toml" }
+          "version=$cargo_version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          Write-Output "cargo version: $cargo_version"
 
-    - name: Upload .exe to Release
-      uses: softprops/action-gh-release@v1
-      with:
-        tag_name: v${{ steps.version.outputs.version }}
-        name: v${{ steps.version.outputs.version }}
-        files: target/release/rod_calc.exe
-        token: ${{ secrets.RELEASE_TOKEN }}
+      - name: Build release
+        run: cargo build --release
+
+      - name: Create Git tag if missing
+        if: github.event_name == 'push'
+        shell: pwsh
+        run: |
+          $tag = "v${{ steps.version.outputs.version }}"
+          git fetch --tags origin
+          $exists = git tag -l $tag
+          if (-not $exists) {
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git tag $tag
+            git push origin $tag
+          } else {
+            Write-Output "Tag $tag already exists, skipping"
+          }
+
+      - name: Create GitHub Release and upload exe
+        if: github.event_name == 'push'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.version.outputs.version }}
+          name: v${{ steps.version.outputs.version }}
+          body: "Автоматический релиз"
+          draft: false
+          prerelease: false
+          files: target/release/rod_calc.exe
